@@ -61,10 +61,10 @@ interface Competition {
   title: string;
   type: string;
   discipline: string;
-  registration_start: string;
-  registration_end: string;
-  event_start: string;
-  event_end: string;
+  registrationStart: string;
+  registrationEnd: string;
+  eventStart: string;
+  eventEnd: string;
   maxTeamMembers: number;
   status: string;
   description?: string;
@@ -175,9 +175,9 @@ export function CompetitionDetails({
   
       const formattedTeams = teams.map(team => ({
         ...team,
-        members: team.user_to_team.map(ut => ut.profiles),
-        captain: team.user_to_team.find(ut => ut.role === 'captain')?.profiles,
-        requiredClasses: team.class_to_team.map(ct => ct.classes.class_name)
+        members: team.user_to_team.map((ut: { profiles: any; }) => ut.profiles),
+        captain: team.user_to_team.find((ut: { role: string; }) => ut.role === 'captain')?.profiles,
+        requiredClasses: team.class_to_team.map((ct: { classes: { class_name: any; }; }) => ct.classes.class_name)
       }));
   
       setRegionalTeams(formattedTeams);
@@ -276,15 +276,15 @@ export function CompetitionDetails({
               <div>
                 <h3 className="font-semibold mb-2">Даты проведения</h3>
                 <p className="text-muted-foreground">
-                  {new Date(competition.event_start).toLocaleDateString()} -{" "}
-                  {new Date(competition.event_end).toLocaleDateString()}
+                  {new Date(competition.eventStart).toLocaleDateString()} -{" "}
+                  {new Date(competition.eventEnd).toLocaleDateString()}
                 </p>
               </div>
               <div>
                 <h3 className="font-semibold mb-2">Регистрация</h3>
                 <p className="text-muted-foreground">
-                  {new Date(competition.registration_start).toLocaleDateString()}{" "}
-                  - {new Date(competition.registration_end).toLocaleDateString()}
+                  {new Date(competition.registrationStart).toLocaleDateString()}{" "}
+                  - {new Date(competition.registrationEnd).toLocaleDateString()}
                 </p>
               </div>
             </div>
@@ -342,15 +342,16 @@ export function CompetitionDetails({
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
+                    <Separator />
                   </>
                 )}
 
-            <Separator />
+            
 
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-semibold">Команды</h3>
-                {competition.type === "open" && (
+                {competition.type === "open" && user?.role === "user" && (
                   <Button size="sm">
                     <Plus className="mr-2 h-4 w-4" />
                     Создать команду

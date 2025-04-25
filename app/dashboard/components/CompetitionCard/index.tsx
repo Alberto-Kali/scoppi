@@ -68,7 +68,7 @@ export function CompetitionCard({ user, competition, onClick }: CompetitionCardP
         <Button variant="outline" size="sm">
           Подробнее
         </Button>
-        {competition.type === 'open'  && competition.regions.includes(user.region) && (
+        {competition.type === 'open'  && competition.regions.includes(String(user.region)) && (
           <Button size="sm">
             <Plus className="mr-2 h-4 w-4" />
             Участвовать
