@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
-import { Competition, User, Team } from "../types";
 import { Plus } from "lucide-react";
 import {
   HoverCard,
@@ -24,14 +23,62 @@ import {
   CardFooter,
 } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { use } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { toast } from "sonner";
+import { NotificationService } from "@/lib/api/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { useState } from "react";
+
+interface User {
+  id: string;
+  name: string;
+  role: string;
+  region: number;
+  class: string;
+  avatar_url?: string;
+  email?: string;
+}
+
+interface Team {
+  id: number;
+  name: string;
+  status: string;
+  region: number;
+  maxMemders: number;
+  captain?: User;
+  members: User[];
+  requiredClasses?: string[];
+}
+
+interface Competition {
+  id: string;
+  title: string;
+  type: string;
+  discipline: string;
+  registration_start: string;
+  registration_end: string;
+  event_start: string;
+  event_end: string;
+  maxTeamMembers: number;
+  status: string;
+  description?: string;
+  regionalAdminId?: string;
+  federalAdminId?: string;
+  teams: Team[];
+}
 
 interface CompetitionDetailsProps {
   competition: Competition;
   user: User | null;
   onClose: () => void;
   onJoinTeam: (team: Team, user: User | null) => void;
-  onSubmitTeam: (teamId: string) => void;
+  onSubmitTeam: (teamId: number) => void;
 }
 
 export function CompetitionDetails({
@@ -41,8 +88,12 @@ export function CompetitionDetails({
   onJoinTeam,
   onSubmitTeam,
 }: CompetitionDetailsProps) {
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [selectedTeams, setSelectedTeams] = useState<number[]>([]);
+  const [regionalTeams, setRegionalTeams] = useState<Team[]>([]);
+
   const checkValid = (user: User | null, team: Team | null) => {
-    if (!user || !team || !team.requiredRoles?.includes(user.class) || !(team.region == user.region)) {
+    if (!user || !team || !team.requiredClasses?.includes(user.class) || !(team.region === user.region)) {
       return false;
     }
     return true;
@@ -53,6 +104,141 @@ export function CompetitionDetails({
       return false;
     }
     return true;
+  };
+
+  const handleSubmitToRegional = async () => {
+    if (!user) return;
+    
+    try {
+      const { data: userTeams, error } = await supabase
+        .from('team_to_competition')
+        .select('team_id')
+        .eq('competition_id', competition.id)
+        .eq('status', 'approved')
+        .in('team_id', 
+          (await supabase
+            .from('user_to_team')
+            .select('team_id')
+            .eq('user_id', user.id)
+            .eq('role', 'captain')
+          ).data?.map(t => t.team_id) || []
+        );
+
+      if (error) throw error;
+
+      if (userTeams.length === 0) {
+        toast.error("У вас нет команд для этого соревнования");
+        return;
+      }
+
+      const teamIds = userTeams.map(team => team.team_id);
+
+      await NotificationService.createNotification(
+        competition.regionalAdminId || '',
+        `Капитан @user:${user.id}_${user.name} хочет подать команды на региональное соревнование @competition:${competition.id}_${competition.title}`,
+        "moderation",
+        {
+          actionType: "competition_join",
+          competitionId: competition.id,
+          teamIds,
+          captainId: user.id
+        },
+        `/competitions/${competition.id}`
+      );
+
+      toast.success("Запрос отправлен региональному администратору");
+    } catch (error) {
+      console.error("Ошибка при отправке запроса:", error);
+      toast.error("Произошла ошибка при отправке запроса");
+    }
+  };
+
+  const handleOpenFederalSubmission = async () => {
+    if (!user || user.role !== 'regional_admin') return;
+    
+    try {
+      const { data: teams, error } = await supabase
+        .from('teams')
+        .select(`
+          *,
+          user_to_team(*, profiles!user_to_team_user_id_fkey(*)),
+          class_to_team(*, classes!class_to_team_class_id_fkey(*))
+        `)
+        .eq('region', user.region)
+  
+      if (error) throw error;
+  
+      if (!teams || teams.length === 0) {
+        toast.error("В вашем регионе нет команд для этого соревнования");
+        return;
+      }
+  
+      const formattedTeams = teams.map(team => ({
+        ...team,
+        members: team.user_to_team.map(ut => ut.profiles),
+        captain: team.user_to_team.find(ut => ut.role === 'captain')?.profiles,
+        requiredClasses: team.class_to_team.map(ct => ct.classes.class_name)
+      }));
+  
+      setRegionalTeams(formattedTeams);
+      setIsDialogOpen(true);
+    } catch (error) {
+      console.error("Ошибка при загрузке команд:", error);
+      toast.error("Произошла ошибка при загрузке команд");
+    }
+  };
+
+  const handleSubmitToFederal = async () => {
+    if (!user || selectedTeams.length === 0) return;
+    
+    try {
+      // Получаем всех федеральных администраторов
+      const { data: federalAdmins, error: adminsError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('role', 'federation_admin');
+  
+      if (adminsError) throw adminsError;
+  
+      if (!federalAdmins || federalAdmins.length === 0) {
+        toast.error("Не найдено федеральных администраторов");
+        return;
+      }
+  
+      // Отправляем уведомление каждому федеральному администратору
+      const notificationPromises = federalAdmins.map(admin => 
+        NotificationService.createNotification(
+          admin.id,
+          `Региональный администратор @user:${user.id}_${user.name} хочет подать набор команд на федеральное соревнование @competition:${competition.id}_${competition.title}`,
+          "moderation",
+          {
+            actionType: "regional_submission",
+            competitionId: competition.id,
+            teamIds: selectedTeams,
+            region: user.region
+          },
+          `/competitions/${competition.id}`
+        )
+      );
+  
+      // Ждем завершения всех отправок
+      await Promise.all(notificationPromises);
+  
+      setIsDialogOpen(false);
+      setSelectedTeams([]);
+      toast.success(`Запрос отправлен ${federalAdmins.length} федеральным администраторам`);
+    } catch (error) {
+      console.error("Ошибка при отправке запроса:", error);
+      toast.error("Произошла ошибка при отправке запроса");
+    }
+  };
+
+  const toggleTeamSelection = (teamId: number) => {
+    setSelectedTeams(prev => 
+      prev.includes(teamId) 
+        ? prev.filter(id => id !== teamId) 
+        : [...prev, teamId]
+    );
   };
 
   return (
@@ -90,27 +276,74 @@ export function CompetitionDetails({
               <div>
                 <h3 className="font-semibold mb-2">Даты проведения</h3>
                 <p className="text-muted-foreground">
-                  {new Date(competition.eventStart).toLocaleDateString()} -{" "}
-                  {new Date(competition.eventEnd).toLocaleDateString()}
+                  {new Date(competition.event_start).toLocaleDateString()} -{" "}
+                  {new Date(competition.event_end).toLocaleDateString()}
                 </p>
               </div>
               <div>
                 <h3 className="font-semibold mb-2">Регистрация</h3>
                 <p className="text-muted-foreground">
-                  {new Date(competition.registrationStart).toLocaleDateString()}{" "}
-                  - {new Date(competition.registrationEnd).toLocaleDateString()}
+                  {new Date(competition.registration_start).toLocaleDateString()}{" "}
+                  - {new Date(competition.registration_end).toLocaleDateString()}
                 </p>
               </div>
-
-              {competition.regions && (
-                <div>
-                  <h3 className="font-semibold mb-2">Регионы</h3>
-                  <p className="text-muted-foreground">
-                    {competition.regions.join(", ")}
-                  </p>
-                </div>
-              )}
             </div>
+
+            <Separator />
+
+            {user?.role === 'regional_admin' && competition.type === 'federal' && (
+                  <>
+                    <Button onClick={handleOpenFederalSubmission}>
+                      Подать набор команд на федеральный этап
+                    </Button>
+
+                    <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                      <DialogContent className="max-h-[80vh] overflow-y-auto">
+                        <DialogHeader>
+                          <DialogTitle>Выбор команд для подачи</DialogTitle>
+                        </DialogHeader>
+                        
+                        <div className="space-y-4">
+                          {regionalTeams.map(team => (
+                            <Card 
+                              key={team.id} 
+                              className={`cursor-pointer ${selectedTeams.includes(team.id) ? 'border-primary' : ''}`}
+                              onClick={() => toggleTeamSelection(team.id)}
+                            >
+                              <CardHeader>
+                                <CardTitle>{team.name}</CardTitle>
+                                <CardDescription>
+                                  Капитан: {team.captain?.name || 'Неизвестно'}
+                                </CardDescription>
+                              </CardHeader>
+                              <CardContent>
+                                <div className="flex flex-wrap gap-2">
+                                  {team.members.map(member => (
+                                    <Avatar key={member.id} className="h-8 w-8">
+                                      <AvatarImage src={member.avatar_url} />
+                                      <AvatarFallback>
+                                        {member.name?.split(' ').map(n => n[0]).join('')}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                  ))}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+
+                        <DialogFooter>
+                          <Button 
+                            onClick={handleSubmitToFederal}
+                            disabled={selectedTeams.length === 0}
+                          >
+                            Отправить выбранные команды ({selectedTeams.length})
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  </>
+                )}
 
             <Separator />
 
@@ -145,7 +378,7 @@ export function CompetitionDetails({
                               <CardTitle>{team.name}</CardTitle>
                             )}
                             <CardDescription>
-                              Капитан: {team.captain.name}
+                              Капитан: {team.captain?.name || "Неизвестно"}
                             </CardDescription>
                           </div>
                           <Badge variant="outline">
@@ -213,15 +446,15 @@ export function CompetitionDetails({
                               </div>
                             </div>
 
-                            {team.status === "forming" && team.requiredRoles && (
+                            {team.status === "forming" && team.requiredClasses && (
                               <div>
                                 <h4 className="text-sm font-medium mb-1">
                                   Требуются
                                 </h4>
                                 <div className="flex flex-wrap gap-2">
-                                  {team.requiredRoles.map((role) => (
-                                    <Badge key={role} variant="secondary">
-                                      {role}
+                                  {team.requiredClasses.map((className) => (
+                                    <Badge key={className} variant="secondary">
+                                      {className}
                                     </Badge>
                                   ))}
                                 </div>
@@ -240,7 +473,7 @@ export function CompetitionDetails({
                         </CardContent>
                         <CardFooter className="flex justify-end gap-2">
                           {team.status === "forming" &&
-                            team.captain.id !== user?.id &&
+                            team.captain?.id !== user?.id &&
                             isValid && (
                               <Button
                                 size="sm"
@@ -250,7 +483,7 @@ export function CompetitionDetails({
                                 Вступить
                               </Button>
                             )}
-                          {team.captain.id === user?.id && (
+                          {team.captain?.id === user?.id && (
                             <>
                               {team.status === "forming" && (
                                 <Button
@@ -272,6 +505,22 @@ export function CompetitionDetails({
                 </div>
               )}
             </div>
+
+            {(user?.role === 'captain' || user?.role === 'regional_admin') && (
+              <div className="space-y-4">
+                <Separator />
+                <h3 className="font-semibold">Действия администратора</h3>
+                
+                {user?.role === 'captain' && competition.type === 'regional' && (
+                  <Button 
+                    onClick={handleSubmitToRegional}
+                    disabled={competition.teams.some(t => t.captain?.id === user.id)}
+                  >
+                    Подать команду на соревнование
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </DrawerContent>

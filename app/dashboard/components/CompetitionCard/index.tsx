@@ -74,6 +74,12 @@ export function CompetitionCard({ user, competition, onClick }: CompetitionCardP
             Участвовать
           </Button>
         )}
+        {competition.type === 'federal'  && user.role=="regional_admin" && (
+          <Button size="sm">
+            <Plus className="mr-2 h-4 w-4" />
+            Отправить
+          </Button>
+        )}
       </CardFooter>
     </Card>
   );

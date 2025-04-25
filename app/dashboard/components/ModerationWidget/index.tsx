@@ -163,12 +163,17 @@ export function ModerationWidget({ user }: NotificationsProps) {
         const competitionId = moderation.metadata["competitionId"];
         const teamIds = moderation.metadata["teamIds"];
         
-        const { error } = await supabase
-          .from('teams')
-          .update({ status: 'pending_federal' })
-          .in('id', teamIds);
+        const error = teamIds.map(async (team: any) => {
+          const { error } = await supabase
+          .from('team_to_competition')
+          .insert({
+            team_id: team,
+            competition_id: competitionId,
+            status: 'approved'
+          });
 
         if (error) throw error;
+        })
 
         await NotificationService.createNotification(
           moderation.sender_id,
@@ -340,7 +345,7 @@ export function ModerationWidget({ user }: NotificationsProps) {
                               {renderEntityLink(
                                 entityParts[0],
                                 entityParts[1],
-                                entityParts[2].split("_").join(" ")
+                                ""
                               )}{" "}
                             </span>
                           );
